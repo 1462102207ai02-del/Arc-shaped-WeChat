@@ -9,6 +9,7 @@
 #import "ArcSettingsController.h"
 #import "ArcPrefs.h"
 #import "ArcCardEngine.h"
+#import "ArcStatus.h"
 #import "ArcClassSettings.h"
 #import "ArcClassConfig.h"
 #import "ArcForceRound.h"
@@ -58,6 +59,9 @@ typedef NS_ENUM(NSUInteger, ArcRow) {
     ArcRowRefresh,
     ArcRowReset,
     ArcRowVersion,
+
+    // 自检诊断
+    ArcRowDiagnostic,
 };
 
 @interface ArcShapedWeChatSettingsController () <UITableViewDelegate, UITableViewDataSource>
@@ -97,6 +101,7 @@ typedef NS_ENUM(NSUInteger, ArcRow) {
         @[ @(ArcRowPerClass) ],
         @[ @(ArcRowScope), @(ArcRowSessionRowCard), @(ArcRowPageBg) ],
         @[ @(ArcRowRefresh), @(ArcRowReset), @(ArcRowVersion) ],
+        @[ @(ArcRowDiagnostic) ],
     ];
     self.sectionFooters = @[
         @"总开关关闭后，所有页面恢复微信原样。",
@@ -105,6 +110,8 @@ typedef NS_ENUM(NSUInteger, ArcRow) {
         @"按逆向清单逐个类单独设置：启用模式、背景色（系统取色器，支持透明度）、圆角半径、缩进上下左右。\n类级配置优先级高于以上所有全局设置。",
         @"白名单模式只处理已验证过的页面；全局模式会把所有列表都卡片化，可能出现个别页面排版异常。",
         @"",
+        @"如果插件没有出现在「设置 → 插件」列表里，看这里：注册成功应为「是」。"
+        "若为否则说明 WCPluginsMgr 当时还不可用，重启微信一般即可。",
     ];
 
     self.tableView = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStyleInsetGrouped];
@@ -488,6 +495,7 @@ typedef NS_ENUM(NSUInteger, ArcRow) {
             return [self sliderCellForRow:row];
 
         case ArcRowPerClass: return [self perClassCell];
+        case ArcRowDiagnostic: return [self diagnosticCell];
         case ArcRowScope:   return [self scopeCell];
         case ArcRowCardStyle: return [self cardStyleCell];
         default: return [self actionCellForRow:row];
@@ -557,9 +565,34 @@ typedef NS_ENUM(NSUInteger, ArcRow) {
     return cell;
 }
 
+- (UITableViewCell *)diagnosticCell {
+    static NSString *ident = @"ArcDiagnosticCell";
+    UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:ident];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:ident];
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        UILabel *label = [[UILabel alloc] init];
+        label.tag = 9101;
+        label.font = [UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightRegular];
+        label.textColor = [UIColor secondaryLabelColor];
+        label.numberOfLines = 0;
+        label.translatesAutoresizingMaskIntoConstraints = NO;
+        [cell.contentView addSubview:label];
+        [NSLayoutConstraint activateConstraints:@[
+            [label.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16],
+            [label.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-16],
+            [label.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:10],
+            [label.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-10],
+        ]];
+    }
+    UILabel *label = [cell.contentView viewWithTag:9101];
+    label.text = [[ArcStatus shared] diagnosticText];
+    return cell;
+}
+
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    // 从「按类配置」返回时刷新"已自定义 N 个类"
+    // 从「按类配置」返回时刷新"已自定义 N 个类"，同时刷新自检信息
     [self.tableView reloadData];
 }
 

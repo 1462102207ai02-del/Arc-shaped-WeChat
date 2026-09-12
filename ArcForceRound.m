@@ -17,6 +17,10 @@
 
 static char kArcRoundSignatureKey;
 static char kArcRoundBgKey;
+// 原始值快照：总开关关闭时用来彻底还原
+static char kArcOrigRadiusKey;
+static char kArcOrigMasksKey;
+static char kArcOrigBgColorKey;
 
 /// 已经被卡片引擎接管背景的 cell，不再叠加 layer 圆角，避免二次裁剪
 static BOOL ArcIsCardedCell(UIView *view) {
@@ -107,6 +111,8 @@ static BOOL ArcIsCardedCell(UIView *view) {
 
 - (BOOL)enabledForKind:(ArcRoundKind)kind {
     ArcPrefs *prefs = [ArcPrefs shared];
+    // 总开关：关掉之后强制圆角也必须整体失效
+    if (!prefs.enabled) { return NO; }
     if (!prefs.forceRoundEnabled) { return NO; }
     switch (kind) {
         case ArcRoundKindAvatar:      return prefs.roundAvatar;
@@ -149,13 +155,55 @@ static BOOL ArcIsCardedCell(UIView *view) {
     return MAX(0, MIN(radius, limit));
 }
 
+/// 还原成微信原本的样子（总开关关闭 / 该类被显式关闭时调用）
+- (void)restoreView:(UIView *)view {
+    NSNumber *radius = objc_getAssociatedObject(view, &kArcOrigRadiusKey);
+    if (!radius) { return; }   // 从没改过，无需还原
+
+    view.layer.cornerRadius = [radius doubleValue];
+    NSNumber *masks = objc_getAssociatedObject(view, &kArcOrigMasksKey);
+    view.layer.masksToBounds = masks ? [masks boolValue] : NO;
+
+    id bg = objc_getAssociatedObject(view, &kArcOrigBgColorKey);
+    view.backgroundColor = [bg isKindOfClass:[UIColor class]] ? bg : nil;
+    if (@available(iOS 13.0, *)) {
+        if ([view.layer respondsToSelector:@selector(cornerCurve)]) {
+            view.layer.cornerCurve = kCACornerCurveCircular;
+        }
+    }
+
+    objc_setAssociatedObject(view, &kArcOrigRadiusKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(view, &kArcOrigMasksKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(view, &kArcOrigBgColorKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(view, &kArcRoundSignatureKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(view, &kArcRoundBgKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+/// 首次改动前记录原始值，供后续还原
+- (void)snapshotOriginalIfNeeded:(UIView *)view {
+    if (objc_getAssociatedObject(view, &kArcOrigRadiusKey)) { return; }
+    objc_setAssociatedObject(view, &kArcOrigRadiusKey, @(view.layer.cornerRadius),
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(view, &kArcOrigMasksKey, @(view.layer.masksToBounds),
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    // backgroundColor 可能是 nil，用 NSNull 占位以便区分"原本就是 nil"
+    objc_setAssociatedObject(view, &kArcOrigBgColorKey,
+                             view.backgroundColor ?: (id)[NSNull null],
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
 - (void)applyToView:(UIView *)view kind:(ArcRoundKind)kind {
     if (!view || ![view isKindOfClass:[UIView class]]) { return; }
 
     // 按类配置优先：显式关闭则跳过；显式开启则绕过总开关
     ArcClassConfig *cfg = [[ArcClassConfigStore shared] configResolvingSuperclassForClass:[view class]];
-    if (cfg.isExplicitlyDisabled) { return; }
-    if (!cfg.isExplicitlyEnabled && ![self enabledForKind:kind]) { return; }
+    BOOL enabled = [self enabledForKind:kind] || cfg.isExplicitlyEnabled;
+    if (cfg.isExplicitlyDisabled) { enabled = NO; }
+
+    if (!enabled) {
+        [self restoreView:view];
+        return;
+    }
 
     CGSize size = view.bounds.size;
     if (size.width < 1.0 || size.height < 1.0) { return; }
@@ -168,6 +216,8 @@ static BOOL ArcIsCardedCell(UIView *view) {
     if (kind == ArcRoundKindSettingCell && ArcIsCardedCell(view)) {
         return;
     }
+
+    [self snapshotOriginalIfNeeded:view];
 
     // 类级背景色（先于圆角处理，保证 radius=0 时也能上色）
     if (cfg.hasBackgroundColor) {

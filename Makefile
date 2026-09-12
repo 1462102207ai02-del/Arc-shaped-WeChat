@@ -17,6 +17,7 @@ BUILD   := build
 SOURCES := ArcShapedWeChat.m \
            ArcHook.m \
            ArcPrefs.m \
+           ArcStatus.m \
            ArcClassConfig.m \
            ArcCardEngine.m \
            ArcForceRound.m \

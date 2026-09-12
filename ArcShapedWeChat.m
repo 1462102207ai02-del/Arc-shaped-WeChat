@@ -18,12 +18,14 @@
 
 #import "ArcHook.h"
 #import "ArcPrefs.h"
+#import "ArcStatus.h"
 #import "ArcCardEngine.h"
 #import "ArcForceRound.h"
 #import "ArcTargetClasses.h"
 #import "ArcSettingsController.h"
 
-#define kArcPluginTitle   @"Arc-shaped WeChat"
+/// 插件在微信「设置 → 插件」列表里的外显名称
+#define kArcPluginTitle   @"你啊爸支鼎溜"
 #define kArcPluginVersion @"1.1-1"
 #define kArcSettingsClass @"ArcShapedWeChatSettingsController"
 
@@ -36,6 +38,7 @@
 /// WCPluginsMgr 的注册接口。ARC 下不允许向 id 发送未知 selector，
 /// 必须先用协议把方法签名告诉编译器；运行时仍走 NSClassFromString 反射。
 @protocol ArcWCPluginsMgrProtocol <NSObject>
++ (instancetype)sharedInstance;
 - (void)registerControllerWithTitle:(NSString *)title
                             version:(NSString *)version
                          controller:(NSString *)controller;
@@ -47,21 +50,48 @@ static BOOL gEntryRegistered = NO;
 
 static void ArcRegisterPluginEntry(void) {
     if (gEntryRegistered) { return; }
+
+    ArcStatus *status = [ArcStatus shared];
+    status.registerAttempts++;
+
     Class mgrClass = NSClassFromString(@"WCPluginsMgr");
+    status.mgrClassFound = (mgrClass != Nil);
     if (!mgrClass) { return; }
+
     @try {
-        id mgr = [mgrClass respondsToSelector:@selector(sharedInstance)]
-               ? [mgrClass performSelector:@selector(sharedInstance)] : nil;
+        if (![mgrClass respondsToSelector:@selector(sharedInstance)]) {
+            status.sharedInstanceOK = NO;
+            return;
+        }
+        id mgr = [mgrClass performSelector:@selector(sharedInstance)];
+        status.sharedInstanceOK = (mgr != nil);
         if (!mgr) { return; }
+
         SEL reg = @selector(registerControllerWithTitle:version:controller:);
+        status.registerSelectorOK = [mgr respondsToSelector:reg];
         if (![mgr respondsToSelector:reg]) { return; }
+
         id<ArcWCPluginsMgrProtocol> registrar = (id<ArcWCPluginsMgrProtocol>)mgr;
         [registrar registerControllerWithTitle:kArcPluginTitle
                                        version:kArcPluginVersion
                                     controller:kArcSettingsClass];
         gEntryRegistered = YES;
+        status.registerSucceeded = YES;
     } @catch (NSException *exception) {
-        // 注册失败绝不能让微信崩，静默跳过
+        status.registerError = exception.reason ?: @"未知异常";
+    }
+}
+
+/// TrollFools 的注入时机不保证，WCPluginsMgr 很可能晚于 dylib 才可用。
+/// 在注册成功前按递增间隔反复尝试 —— 每次开销仅一次 NSClassFromString + 一次注册。
+static void ArcScheduleEntryRegistration(void) {
+    static const NSTimeInterval delays[] = {0.5, 1.5, 3.0, 6.0, 12.0, 25.0, 45.0, 75.0};
+    for (NSUInteger i = 0; i < sizeof(delays) / sizeof(delays[0]); i++) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delays[i] * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            if (gEntryRegistered) { return; }
+            ArcRegisterPluginEntry();
+        });
     }
 }
 
@@ -139,21 +169,19 @@ ARC_DEFINE_WILL_DISPLAY(More)
 
 #pragma mark - 插件入口页
 
-static IMP gOrigMinimizeViewDidLoad = NULL;
-static void ArcMinimizeViewDidLoad(UIViewController *self, SEL _cmd) {
-    if (gOrigMinimizeViewDidLoad) {
-        ((void (*)(id, SEL))gOrigMinimizeViewDidLoad)(self, _cmd);
+// 关键：注册必须在 %orig **之前**完成。
+// 微信插件列表页是在自己的 viewDidLoad 里构建数据源的，
+// 如果等 %orig 跑完再注册，这一次打开列表里就不会出现本插件。
+#define ARC_DEFINE_ENTRY_VIEWDIDLOAD(unique) \
+    static IMP gOrigEntry_##unique = NULL; \
+    static void ArcEntryViewDidLoad_##unique(UIViewController *self, SEL _cmd) { \
+        ArcRegisterPluginEntry(); \
+        if (gOrigEntry_##unique) { ((void (*)(id, SEL))gOrigEntry_##unique)(self, _cmd); } \
     }
-    ArcRegisterPluginEntry();
-}
 
-static IMP gOrigPluginsViewDidLoad = NULL;
-static void ArcPluginsViewDidLoad(UIViewController *self, SEL _cmd) {
-    if (gOrigPluginsViewDidLoad) {
-        ((void (*)(id, SEL))gOrigPluginsViewDidLoad)(self, _cmd);
-    }
-    ArcRegisterPluginEntry();
-}
+ARC_DEFINE_ENTRY_VIEWDIDLOAD(Minimize)
+ARC_DEFINE_ENTRY_VIEWDIDLOAD(Plugins)
+ARC_DEFINE_ENTRY_VIEWDIDLOAD(SettingPlugins)
 
 #pragma mark - 安装
 
@@ -181,6 +209,7 @@ static void ArcInstallWeChatHooks(void) {
                         (IMP)ArcManagerWillDisplay, &gOrigManagerWillDisplay);
         ArcHookInstance(managerClass, @selector(tableView:heightForFooterInSection:),
                         (IMP)ArcManagerFooterHeight, &gOrigManagerFooterHeight);
+        [[ArcStatus shared] noteHookedClass:@"WCTableViewManager"];
     }
 
     // 一级 Tab
@@ -198,22 +227,30 @@ static void ArcInstallWeChatHooks(void) {
             continue;
         }
         [gHookedClasses addObject:name];
-        ArcHookInstance(cls, @selector(tableView:willDisplayCell:forRowAtIndexPath:),
-                        willDisplayTargets[i].imp, willDisplayTargets[i].slot);
+        if (ArcHookInstance(cls, @selector(tableView:willDisplayCell:forRowAtIndexPath:),
+                            willDisplayTargets[i].imp, willDisplayTargets[i].slot)) {
+            [[ArcStatus shared] noteHookedClass:name];
+        }
     }
 
-    // 插件收纳入口
-    Class minimizeClass = NSClassFromString(@"MinimizeViewController");
-    if (minimizeClass && ![gHookedClasses containsObject:@"MinimizeViewController"]) {
-        [gHookedClasses addObject:@"MinimizeViewController"];
-        ArcHookInstance(minimizeClass, @selector(viewDidLoad),
-                        (IMP)ArcMinimizeViewDidLoad, &gOrigMinimizeViewDidLoad);
-    }
-    Class pluginsClass = NSClassFromString(@"WCPluginsViewController");
-    if (pluginsClass && ![gHookedClasses containsObject:@"WCPluginsViewController"]) {
-        [gHookedClasses addObject:@"WCPluginsViewController"];
-        ArcHookInstance(pluginsClass, @selector(viewDidLoad),
-                        (IMP)ArcPluginsViewDidLoad, &gOrigPluginsViewDidLoad);
+    // 插件收纳入口：MinimizeViewController（官方声明给的入口）
+    // + WCPluginsViewController / SettingPluginsViewController（插件列表页自身，保底）
+    // 三者各用独立的原始 IMP 槽位，不能共用。
+    struct { NSString *name; IMP imp; IMP *slot; } const pluginEntries[] = {
+        { @"MinimizeViewController",       (IMP)ArcEntryViewDidLoad_Minimize,       &gOrigEntry_Minimize },
+        { @"WCPluginsViewController",      (IMP)ArcEntryViewDidLoad_Plugins,        &gOrigEntry_Plugins },
+        { @"SettingPluginsViewController", (IMP)ArcEntryViewDidLoad_SettingPlugins, &gOrigEntry_SettingPlugins },
+    };
+    for (NSUInteger i = 0; i < sizeof(pluginEntries) / sizeof(pluginEntries[0]); i++) {
+        NSString *name = pluginEntries[i].name;
+        if ([gHookedClasses containsObject:name]) { continue; }
+        Class cls = NSClassFromString(name);
+        if (!cls) { continue; }
+        if (![cls instancesRespondToSelector:@selector(viewDidLoad)]) { continue; }
+        [gHookedClasses addObject:name];
+        if (ArcHookInstance(cls, @selector(viewDidLoad), pluginEntries[i].imp, pluginEntries[i].slot)) {
+            [[ArcStatus shared] noteHookedClass:name];
+        }
     }
 
     // 强制圆角（视图类清单）
@@ -232,7 +269,10 @@ static void ArcInstallAll(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{ ArcInstallWeChatHooks(); });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6.0 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{ ArcInstallWeChatHooks(); ArcRegisterPluginEntry(); });
+                   dispatch_get_main_queue(), ^{ ArcInstallWeChatHooks(); });
+
+    // 插件收纳注册独立于 hook 安装，单独排重试序列（注册失败是最常见的问题）
+    ArcScheduleEntryRegistration();
 }
 
 #pragma mark - dylib 入口
@@ -248,7 +288,12 @@ static void ArcShapedWeChatEntry(void) {
         (void)[ArcPrefs shared];
         (void)[ArcCardEngine shared];
 
+        ArcStatus *status = [ArcStatus shared];
+        status.dylibLoaded = YES;
+
         ArcInstallAll();
+        // 先同步注册一次（若 WCPluginsMgr 此刻已可用就能立刻成功），
+        // 不成功则由 ArcScheduleEntryRegistration 的延迟序列继续重试。
         ArcRegisterPluginEntry();
     }
 }

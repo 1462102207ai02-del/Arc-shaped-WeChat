@@ -17,6 +17,9 @@ static char kArcTVStateKey;       // ArcTVState * 挂在 UITableView 上
 static char kArcCellTVKey;        // UITableView * (assign) 挂在 cell 上做缓存
 static char kArcOrigBgKey;        // UIColor * 原始背景色
 static char kArcAppliedKey;       // NSDictionary * 上次应用的快照，避免重复计算
+static char kArcHiddenSepKey;     // @YES 表示这条分割线是我们隐藏的（关闭时需还原）
+static char kArcTVOrigBgKey;      // 表格原始底色
+static char kArcTVBvOrigBgKey;    // 表格 backgroundView 原始底色
 
 #pragma mark - 表格状态缓存
 
@@ -135,6 +138,7 @@ static char kArcAppliedKey;       // NSDictionary * 上次应用的快照，避�
 
 @interface ArcCardEngine ()
 @property (nonatomic, assign) NSInteger generation;
+- (void)restoreTableViewIfNeeded:(UITableView *)tableView;
 @end
 
 @implementation ArcCardEngine
@@ -357,7 +361,9 @@ static UIRectCorner ArcCornersForPosition(ArcCellPosition position) {
               indexPath:(NSIndexPath *)indexPath {
     if (!cell || !tableView) { return; }
     if (![self isCardEnabledForTableView:tableView]) {
+        // 总开关关闭 / 该类被显式关闭：把之前动过的一切都还原
         [self restoreCell:cell];
+        [self restoreTableViewIfNeeded:tableView];
         return;
     }
 
@@ -439,6 +445,9 @@ static UIRectCorner ArcCornersForPosition(ArcCellPosition position) {
     cell.backgroundColor = [UIColor clearColor];
     if (prefs.hideSystemSeparator) {
         [self hideSystemSeparatorsInCell:cell];
+    } else {
+        // 关闭「隐藏系统分割线」后必须还原，否则分割线永久消失
+        [self restoreSeparatorsInCell:cell];
     }
 
     objc_setAssociatedObject(cell, &kArcAppliedKey, snapshot, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -472,8 +481,29 @@ static UIRectCorner ArcCornersForPosition(ArcCellPosition position) {
     cell.backgroundView = nil;
     cell.selectedBackgroundView = nil;
     cell.backgroundColor = origin ?: [UIColor clearColor];
+    [self restoreSeparatorsInCell:cell];
     objc_setAssociatedObject(cell, &kArcCardedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(cell, &kArcAppliedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(cell, &kArcOrigBgKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+/// 表格底色：改动前记录原值，关闭时还原
+- (void)restoreTableViewIfNeeded:(UITableView *)tableView {
+    if (!tableView) { return; }
+    id orig = objc_getAssociatedObject(tableView, &kArcTVOrigBgKey);
+    if (!orig) { return; }
+
+    tableView.backgroundColor = [orig isKindOfClass:[UIColor class]] ? orig : nil;
+
+    UIView *bgView = tableView.backgroundView;
+    if (bgView) {
+        id origBv = objc_getAssociatedObject(bgView, &kArcTVBvOrigBgKey);
+        if (origBv) {
+            bgView.backgroundColor = [origBv isKindOfClass:[UIColor class]] ? origBv : nil;
+            objc_setAssociatedObject(bgView, &kArcTVBvOrigBgKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    }
+    objc_setAssociatedObject(tableView, &kArcTVOrigBgKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 #pragma mark - 表格底色
@@ -483,12 +513,29 @@ static UIRectCorner ArcCornersForPosition(ArcCellPosition position) {
     state.prepared = YES;
 
     ArcPrefs *prefs = [ArcPrefs shared];
-    if (!prefs.tintTableViewBg) { return; }
+    if (!prefs.tintTableViewBg) {
+        // 开关被关掉：把之前改过的表格底色还原回去
+        [self restoreTableViewIfNeeded:tableView];
+        return;
+    }
+
+    // 改动前记录原值（NSNull 表示原本就是 nil），供关闭开关时还原
+    if (!objc_getAssociatedObject(tableView, &kArcTVOrigBgKey)) {
+        objc_setAssociatedObject(tableView, &kArcTVOrigBgKey,
+                                 tableView.backgroundColor ?: (id)[NSNull null],
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    UIView *bgView = tableView.backgroundView;
+    if (bgView && !objc_getAssociatedObject(bgView, &kArcTVBvOrigBgKey)) {
+        objc_setAssociatedObject(bgView, &kArcTVBvOrigBgKey,
+                                 bgView.backgroundColor ?: (id)[NSNull null],
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
 
     UIColor *pageColor = [prefs pageColorForTraitCollection:tableView.traitCollection];
     tableView.backgroundColor = pageColor;
-    if (tableView.backgroundView) {
-        tableView.backgroundView.backgroundColor = pageColor;
+    if (bgView) {
+        bgView.backgroundColor = pageColor;
     }
 }
 
@@ -513,7 +560,23 @@ static UIRectCorner ArcCornersForPosition(ArcCellPosition position) {
         BOOL atTop = (f.origin.y <= 1.2);
         BOOL atBottom = (f.origin.y + h >= cellH - 1.2);
         if (thin && wide && (atTop || atBottom)) {
+            // 打标记，关闭开关时才能准确还原
+            objc_setAssociatedObject(sub, &kArcHiddenSepKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             sub.hidden = YES;
+        }
+    }
+}
+
+- (void)restoreSeparatorsInCell:(UITableViewCell *)cell {
+    [self restoreSeparatorsInView:cell];
+    [self restoreSeparatorsInView:cell.contentView];
+}
+
+- (void)restoreSeparatorsInView:(UIView *)container {
+    for (UIView *sub in container.subviews) {
+        if (objc_getAssociatedObject(sub, &kArcHiddenSepKey)) {
+            sub.hidden = NO;
+            objc_setAssociatedObject(sub, &kArcHiddenSepKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
     }
 }
