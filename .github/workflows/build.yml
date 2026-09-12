@@ -1,0 +1,63 @@
+name: Build Arc-shaped WeChat
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build for TrollFools
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+
+      - name: Build dylib
+        run: make
+
+      - name: Inspect Mach-O
+        run: |
+          echo "=== file ==="
+          file build/ArcShapedWeChat.dylib
+          echo "=== install_name ==="
+          otool -D build/ArcShapedWeChat.dylib
+          echo "=== linked libraries ==="
+          otool -L build/ArcShapedWeChat.dylib
+          echo "=== architectures ==="
+          lipo -info build/ArcShapedWeChat.dylib
+
+      - name: Ad-hoc codesign
+        run: codesign -f -s - build/ArcShapedWeChat.dylib
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp build/ArcShapedWeChat.dylib dist/
+          cp USING-WITH-TROLLFOOLS.md dist/ 2>/dev/null || true
+          cd dist
+          zip -r ../ArcShapedWeChat_TrollFools.zip .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ArcShapedWeChat-TrollFools-dylib
+          path: ArcShapedWeChat_TrollFools.zip
+          if-no-files-found: error
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ArcShapedWeChat_TrollFools.zip
+          body_path: USING-WITH-TROLLFOOLS.md
