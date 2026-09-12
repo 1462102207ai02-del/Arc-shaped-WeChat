@@ -64,7 +64,8 @@
 }
 
 - (void)rebuildSections {
-    NSString *keyword = [[self.searchController.searchBar.text ?: @""] stringByTrimmingCharactersInSet:
+    NSString *raw = self.searchController.searchBar.text ?: @"";
+    NSString *keyword = [raw stringByTrimmingCharactersInSet:
                          [NSCharacterSet whitespaceAndNewlineCharacterSet]];
     NSArray<NSString *> *views = self.viewNames;
     NSArray<NSString *> *ctrls = self.controllerNames;
