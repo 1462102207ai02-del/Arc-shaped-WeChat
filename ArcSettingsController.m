@@ -9,6 +9,8 @@
 #import "ArcSettingsController.h"
 #import "ArcPrefs.h"
 #import "ArcCardEngine.h"
+#import "ArcClassSettings.h"
+#import "ArcClassConfig.h"
 #import "ArcForceRound.h"
 
 #define kArcVersion @"1.1-1"
@@ -43,6 +45,9 @@ typedef NS_ENUM(NSUInteger, ArcRow) {
     ArcRowRoundTableView,
     ArcRowTableViewRadius,
     ArcRowContinuousCorner,
+
+    // 按类配置
+    ArcRowPerClass,
 
     // 作用范围
     ArcRowScope,
@@ -89,15 +94,7 @@ typedef NS_ENUM(NSUInteger, ArcRow) {
            @(ArcRowRoundSettingCell), @(ArcRowSettingCellRadius),
            @(ArcRowRoundTableView), @(ArcRowTableViewRadius),
            @(ArcRowContinuousCorner) ],
-        @[ @(ArcRowForceRoundMaster),
-           @(ArcRowRoundAvatar), @(ArcRowAvatarCircle), @(ArcRowAvatarRadius),
-           @(ArcRowRoundImageView), @(ArcRowImageViewRadius),
-           @(ArcRowRoundImageGrid), @(ArcRowImageGridRadius),
-           @(ArcRowRoundButton), @(ArcRowButtonRadius),
-           @(ArcRowRoundContainer), @(ArcRowContainerRadius),
-           @(ArcRowRoundSettingCell), @(ArcRowSettingCellRadius),
-           @(ArcRowRoundTableView), @(ArcRowTableViewRadius),
-           @(ArcRowContinuousCorner) ],
+        @[ @(ArcRowPerClass) ],
         @[ @(ArcRowScope), @(ArcRowSessionRowCard), @(ArcRowPageBg) ],
         @[ @(ArcRowRefresh), @(ArcRowReset), @(ArcRowVersion) ],
     ];
@@ -105,6 +102,7 @@ typedef NS_ENUM(NSUInteger, ArcRow) {
         @"总开关关闭后，所有页面恢复微信原样。",
         @"卡片化的三个核心参数：圆角半径决定弧线，左右缩进决定卡片离屏幕边的距离，卡片间距决定卡与卡之间的留白。",
         @"对应逆向得到的视图类清单：头像 MMHeadImageView、图片 WCImageView/MMWebImageView、九宫格 MMImageGridView、按钮 MMUIButton/MMTransparentButton、容器 MMUIView/ColorGradientView、单元格 MMTableViewCell/SettingCell、表格 MMTableView。容器类圆角最激进，出问题时优先关它。",
+        @"按逆向清单逐个类单独设置：启用模式、背景色（系统取色器，支持透明度）、圆角半径、缩进上下左右。\n类级配置优先级高于以上所有全局设置。",
         @"白名单模式只处理已验证过的页面；全局模式会把所有列表都卡片化，可能出现个别页面排版异常。",
         @"",
     ];
@@ -489,6 +487,7 @@ typedef NS_ENUM(NSUInteger, ArcRow) {
         case ArcRowTableViewRadius:
             return [self sliderCellForRow:row];
 
+        case ArcRowPerClass: return [self perClassCell];
         case ArcRowScope:   return [self scopeCell];
         case ArcRowCardStyle: return [self cardStyleCell];
         default: return [self actionCellForRow:row];
@@ -501,6 +500,7 @@ typedef NS_ENUM(NSUInteger, ArcRow) {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     ArcRow row = (ArcRow)[self.sections[indexPath.section][indexPath.row] integerValue];
 
+    if (row == ArcRowPerClass)  { [self openPerClassSettings]; return; }
     if (row == ArcRowRefresh) { [self onRefresh:nil]; return; }
     if (row == ArcRowReset)   { [self onReset:nil];   return; }
     if (row == ArcRowCardStyle) {
@@ -522,6 +522,45 @@ typedef NS_ENUM(NSUInteger, ArcRow) {
         alert.popoverPresentationController.sourceRect = [tableView rectForRowAtIndexPath:indexPath];
         [self presentViewController:alert animated:YES completion:nil];
     }
+}
+
+#pragma mark - 按类配置
+
+- (void)openPerClassSettings {
+    ArcClassListController *list = [[ArcClassListController alloc] init];
+    if (self.navigationController) {
+        [self.navigationController pushViewController:list animated:YES];
+    } else {
+        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:list];
+        [self presentViewController:nav animated:YES completion:nil];
+    }
+}
+
+- (UITableViewCell *)perClassCell {
+    static NSString *ident = @"ArcPerClassCell";
+    UITableViewCell *cell = [self.tableView dequeueReusableCellWithIdentifier:ident];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:ident];
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        cell.textLabel.font = [UIFont systemFontOfSize:16];
+        cell.detailTextLabel.font = [UIFont systemFontOfSize:13];
+    }
+    cell.textLabel.text = @"按类配置";
+    NSUInteger n = [[ArcClassConfigStore shared] customizedCount];
+    if (n > 0) {
+        cell.detailTextLabel.text = [NSString stringWithFormat:@"已自定义 %lu 个类", (unsigned long)n];
+        cell.detailTextLabel.textColor = [UIColor systemBlueColor];
+    } else {
+        cell.detailTextLabel.text = @"";
+        cell.detailTextLabel.textColor = [UIColor tertiaryLabelColor];
+    }
+    return cell;
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    // 从「按类配置」返回时刷新"已自定义 N 个类"
+    [self.tableView reloadData];
 }
 
 @end

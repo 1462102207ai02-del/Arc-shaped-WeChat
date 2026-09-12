@@ -9,12 +9,14 @@
 
 #import "ArcForceRound.h"
 #import "ArcPrefs.h"
+#import "ArcClassConfig.h"
 #import "ArcTargetClasses.h"
 #import "ArcHook.h"
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
 
 static char kArcRoundSignatureKey;
+static char kArcRoundBgKey;
 
 /// 已经被卡片引擎接管背景的 cell，不再叠加 layer 圆角，避免二次裁剪
 static BOOL ArcIsCardedCell(UIView *view) {
@@ -22,6 +24,12 @@ static BOOL ArcIsCardedCell(UIView *view) {
     UIView *bg = ((UITableViewCell *)view).backgroundView;
     return bg && [NSStringFromClass([bg class]) isEqualToString:@"ArcCardBackgroundView"];
 }
+
+@interface ArcForceRound ()
+- (CGFloat)radiusForKind:(ArcRoundKind)kind
+                    size:(CGSize)size
+                  config:(nullable ArcClassConfig *)cfg;
+@end
 
 @implementation ArcForceRound
 
@@ -112,12 +120,19 @@ static BOOL ArcIsCardedCell(UIView *view) {
     return NO;
 }
 
-- (CGFloat)radiusForKind:(ArcRoundKind)kind size:(CGSize)size {
+- (CGFloat)radiusForKind:(ArcRoundKind)kind
+                    size:(CGSize)size
+                  config:(nullable ArcClassConfig *)cfg {
     ArcPrefs *prefs = [ArcPrefs shared];
     CGFloat radius = 0;
+
+    // 视图类允许「强制正圆」单独开在类上
+    BOOL circle = (kind == ArcRoundKindAvatar) && prefs.avatarCircle;
+    if (cfg && cfg.hasForceCircle && cfg.forceCircle) { circle = YES; }
+
     switch (kind) {
         case ArcRoundKindAvatar:
-            radius = prefs.avatarCircle ? MIN(size.width, size.height) / 2.0 : prefs.avatarRadius;
+            radius = circle ? MIN(size.width, size.height) / 2.0 : prefs.avatarRadius;
             break;
         case ArcRoundKindImageView:   radius = prefs.imageViewRadius; break;
         case ArcRoundKindImageGrid:   radius = prefs.imageGridRadius; break;
@@ -126,13 +141,21 @@ static BOOL ArcIsCardedCell(UIView *view) {
         case ArcRoundKindSettingCell: radius = prefs.settingCellRadius; break;
         case ArcRoundKindTableView:   radius = prefs.tableViewRadius; break;
     }
+
+    // 类级圆角覆盖全局（正圆开关优先于半径）
+    if (cfg && cfg.hasCornerRadius && !circle) { radius = cfg.cornerRadius; }
+
     CGFloat limit = MIN(size.width, size.height) / 2.0;
     return MAX(0, MIN(radius, limit));
 }
 
 - (void)applyToView:(UIView *)view kind:(ArcRoundKind)kind {
     if (!view || ![view isKindOfClass:[UIView class]]) { return; }
-    if (![self enabledForKind:kind]) { return; }
+
+    // 按类配置优先：显式关闭则跳过；显式开启则绕过总开关
+    ArcClassConfig *cfg = [[ArcClassConfigStore shared] configResolvingSuperclassForClass:[view class]];
+    if (cfg.isExplicitlyDisabled) { return; }
+    if (!cfg.isExplicitlyEnabled && ![self enabledForKind:kind]) { return; }
 
     CGSize size = view.bounds.size;
     if (size.width < 1.0 || size.height < 1.0) { return; }
@@ -146,7 +169,17 @@ static BOOL ArcIsCardedCell(UIView *view) {
         return;
     }
 
-    CGFloat radius = [self radiusForKind:kind size:size];
+    // 类级背景色（先于圆角处理，保证 radius=0 时也能上色）
+    if (cfg.hasBackgroundColor) {
+        NSString *hex = ArcColorHexString(cfg.backgroundColor);
+        NSString *applied = objc_getAssociatedObject(view, &kArcRoundBgKey);
+        if (![applied isEqualToString:hex]) {
+            view.backgroundColor = cfg.backgroundColor;
+            objc_setAssociatedObject(view, &kArcRoundBgKey, hex, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    }
+
+    CGFloat radius = [self radiusForKind:kind size:size config:cfg];
     if (radius <= 0.05) { return; }
 
     NSString *signature = [NSString stringWithFormat:@"%.2f|%.1f|%.1f", radius, size.width, size.height];

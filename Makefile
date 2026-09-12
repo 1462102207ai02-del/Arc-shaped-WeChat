@@ -17,9 +17,11 @@ BUILD   := build
 SOURCES := ArcShapedWeChat.m \
            ArcHook.m \
            ArcPrefs.m \
+           ArcClassConfig.m \
            ArcCardEngine.m \
            ArcForceRound.m \
-           ArcSettingsController.m
+           ArcSettingsController.m \
+           ArcClassSettings.m
 
 HEADERS := $(wildcard *.h)
 

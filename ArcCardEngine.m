@@ -5,6 +5,7 @@
 
 #import "ArcCardEngine.h"
 #import "ArcPrefs.h"
+#import "ArcClassConfig.h"
 #import "ArcTargetClasses.h"
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
@@ -198,6 +199,16 @@ static char kArcAppliedKey;       // NSDictionary * 上次应用的快照，避�
     return nil;
 }
 
+/// 该表格所属控制器对应的类级配置（未自定义时返回 nil）
+- (ArcClassConfig *)configForTableView:(UITableView *)tableView {
+    if (!tableView) { return nil; }
+    UIViewController *vc = [self owningViewControllerForView:tableView];
+    NSString *name = vc ? NSStringFromClass([vc class]) : @"";
+    if (name.length == 0) { return nil; }
+    ArcClassConfig *cfg = [[ArcClassConfigStore shared] configForClassName:name];
+    return cfg.isCustomized ? cfg : nil;
+}
+
 - (BOOL)classIsListed:(Class)cls inSet:(NSSet<NSString *> *)set {
     if (!cls) { return NO; }
     Class stop = [UIViewController class];
@@ -249,6 +260,12 @@ static char kArcAppliedKey;       // NSDictionary * 上次应用的快照，避�
         }
     }
 
+    // 类级配置优先级最高：可强制开 / 强制关
+    ArcClassConfig *clsConfig = (clsName.length > 0)
+        ? [[ArcClassConfigStore shared] configForClassName:clsName] : nil;
+    if (clsConfig.isExplicitlyEnabled) { enabled = YES; }
+    else if (clsConfig.isExplicitlyDisabled) { enabled = NO; }
+
     state.cardEnabled = enabled;
     state.rowCardMode = enabled && prefs.sessionRowCard &&
                         (clsName.length > 0) && [self.rowCardPages containsObject:clsName];
@@ -283,20 +300,26 @@ static char kArcAppliedKey;       // NSDictionary * 上次应用的快照，避�
     if (![self isCardEnabledForTableView:tableView]) { return frame; }
 
     ArcPrefs *prefs = [ArcPrefs shared];
-    CGFloat inset = prefs.horizontalInset;
-    if (inset <= 0) { return frame; }
+    ArcClassConfig *cfg = [self configForTableView:tableView];
+
+    CGFloat left  = (cfg.hasInsets) ? MAX(0, cfg.insetLeft)  : prefs.horizontalInset;
+    CGFloat right = (cfg.hasInsets) ? MAX(0, cfg.insetRight) : prefs.horizontalInset;
+    if (left <= 0 && right <= 0) { return frame; }
 
     // 缩进量不得超过可用宽度的 1/3，避免畸形布局
-    inset = MIN(inset, floor(frame.size.width / 3.0));
+    CGFloat maxInset = floor(frame.size.width / 3.0);
+    left  = MIN(left,  maxInset);
+    right = MIN(right, maxInset);
+
     // 已经缩进过就不再叠加（防止某些 VC 反复 setFrame 造成累积）
     UITableView *tv = tableView;
-    if (tv && fabs(frame.size.width - (tv.bounds.size.width - inset * 2.0)) < 0.5) {
+    if (tv && fabs(frame.size.width - (tv.bounds.size.width - left - right)) < 0.5) {
         return frame;
     }
 
     CGRect result = frame;
-    result.origin.x += inset;
-    result.size.width -= inset * 2.0;
+    result.origin.x += left;
+    result.size.width -= (left + right);
     return result;
 }
 
@@ -348,16 +371,26 @@ static UIRectCorner ArcCornersForPosition(ArcCellPosition position) {
                                               rowCardMode:state.rowCardMode];
     if (position == ArcCellPositionUnknown) { return; }
 
+    ArcClassConfig *clsConfig = [self configForTableView:tableView];
+
     CGFloat vPad = state.rowCardMode ? MAX(0, prefs.cardSpacing) / 2.0 : 0.0;
-    UIEdgeInsets cardInsets = UIEdgeInsetsMake(vPad, 0, vPad, 0);
+    // 类级缩进叠加在行卡垂直留白之上
+    UIEdgeInsets extra = clsConfig.hasInsets ? clsConfig.insets : UIEdgeInsetsZero;
+    UIEdgeInsets cardInsets = UIEdgeInsetsMake(vPad + extra.top,
+                                               extra.left,
+                                               vPad + extra.bottom,
+                                               extra.right);
     UIRectCorner corners = ArcCornersForPosition(position);
-    CGFloat radius = prefs.cornerRadius;
-    UIColor *cardColor = [prefs cardColorForTraitCollection:tableView.traitCollection];
+    CGFloat radius = clsConfig.hasCornerRadius ? clsConfig.cornerRadius : prefs.cornerRadius;
+    UIColor *cardColor = clsConfig.hasBackgroundColor
+        ? clsConfig.backgroundColor
+        : [prefs cardColorForTraitCollection:tableView.traitCollection];
 
     // —— 幂等短路：参数没变就只刷新几何 ——
     NSDictionary *snapshot = @{
         @"p": @(position), @"r": @(radius), @"i": NSStringFromUIEdgeInsets(cardInsets),
         @"c": @(corners), @"s": @(prefs.showDivider), @"g": @(self.generation),
+        @"cbg": clsConfig.hasBackgroundColor ? ArcColorHexString(clsConfig.backgroundColor) : @"",
     };
     ArcCardBackgroundView *bg = (ArcCardBackgroundView *)cell.backgroundView;
 
