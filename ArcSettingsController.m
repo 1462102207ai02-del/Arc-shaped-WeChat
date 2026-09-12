@@ -14,7 +14,7 @@
 #import "ArcClassConfig.h"
 #import "ArcForceRound.h"
 
-#define kArcVersion @"1.2-1"
+#define kArcVersion @"1.3-1"
 
 typedef NS_ENUM(NSUInteger, ArcRow) {
     // 主开关

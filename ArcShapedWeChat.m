@@ -26,7 +26,7 @@
 
 /// 插件在微信「设置 → 插件」列表里的外显名称
 #define kArcPluginTitle   @"你啊爸支鼎溜"
-#define kArcPluginVersion @"1.2-1"
+#define kArcPluginVersion @"1.3-1"
 #define kArcSettingsClass @"ArcShapedWeChatSettingsController"
 
 #pragma mark - 私有 API 声明（仅声明，不实现）
@@ -48,9 +48,28 @@
 
 static BOOL gEntryRegistered = NO;
 
-static void ArcRegisterPluginEntry(void) {
-    if (gEntryRegistered) { return; }
+/// 复查本插件是否还在 WCPluginsMgr.plugins 里。
+/// 微信自身的初始化流程可能在启动中期重建 sharedInstance 的 _plugins 数组，
+/// 把早期注册进去的条目静默冲掉 —— 参考成熟实现（WBRound）从不在启动早期
+/// 注册、只在页面出现时注册，正是为了躲开这个时序。这里反过来做：
+/// 允许早期注册，但每次触发都复查，条目丢了就自动补注册。
+static BOOL ArcEntryStillListed(id mgr) {
+    @try {
+        id plugins = nil;
+        @try { plugins = [mgr valueForKey:@"plugins"]; } @catch (NSException *e) { return NO; }
+        if (![plugins isKindOfClass:[NSArray class]]) { return NO; }
+        for (id item in plugins) {
+            // 不猜条目的具体结构（字典/模型都有可能），直接扫描述串，
+            // 只要外显名或控制器类名出现在里面就算还在。
+            NSString *desc = [NSString stringWithFormat:@"%@", item];
+            if ([desc containsString:kArcPluginTitle] ||
+                [desc containsString:kArcSettingsClass]) { return YES; }
+        }
+    } @catch (NSException *e) { return NO; }
+    return NO;
+}
 
+static void ArcRegisterPluginEntry(void) {
     ArcStatus *status = [ArcStatus shared];
     status.registerAttempts++;
 
@@ -67,6 +86,13 @@ static void ArcRegisterPluginEntry(void) {
         status.sharedInstanceOK = (mgr != nil);
         if (!mgr) { return; }
 
+        // 已注册过 → 每次触发都复查一遍列表；条目被微信重建冲掉时自动补注册
+        if (gEntryRegistered) {
+            if (ArcEntryStillListed(mgr)) { return; }
+            gEntryRegistered = NO;
+            status.registerSucceeded = NO;
+        }
+
         SEL reg = @selector(registerControllerWithTitle:version:controller:);
         status.registerSelectorOK = [mgr respondsToSelector:reg];
         if (![mgr respondsToSelector:reg]) { return; }
@@ -77,21 +103,11 @@ static void ArcRegisterPluginEntry(void) {
                                     controller:kArcSettingsClass];
         gEntryRegistered = YES;
         status.registerSucceeded = YES;
+        NSLog(@"[ArcShapedWeChat] WCPluginsMgr entry registered: %@ (v%@)",
+              kArcPluginTitle, kArcPluginVersion);
     } @catch (NSException *exception) {
         status.registerError = exception.reason ?: @"未知异常";
-    }
-}
-
-/// TrollFools 的注入时机不保证，WCPluginsMgr 很可能晚于 dylib 才可用。
-/// 在注册成功前按递增间隔反复尝试 —— 每次开销仅一次 NSClassFromString + 一次注册。
-static void ArcScheduleEntryRegistration(void) {
-    static const NSTimeInterval delays[] = {0.5, 1.5, 3.0, 6.0, 12.0, 25.0, 45.0, 75.0};
-    for (NSUInteger i = 0; i < sizeof(delays) / sizeof(delays[0]); i++) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delays[i] * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            if (gEntryRegistered) { return; }
-            ArcRegisterPluginEntry();
-        });
+        NSLog(@"[ArcShapedWeChat] register error: %@", status.registerError);
     }
 }
 
@@ -167,27 +183,118 @@ ARC_DEFINE_WILL_DISPLAY(NewMainFrame)
 ARC_DEFINE_WILL_DISPLAY(Contacts)
 ARC_DEFINE_WILL_DISPLAY(More)
 
-#pragma mark - 插件入口页
+#pragma mark - 设置页第二入口（页脚按钮 + 双指轻点，参考 WBRound WBInstallFooter）
 
-// 注册策略（关键修正）：
-//   原版错把 MinimizeViewController 当成"插件入口"。那是多任务浮窗控制器
-//   (MinimizeAbsorbFloatingView/MinimizeGestureCircleView 等), 跟插件收纳毫无关系，
-//   hook 它永远不会触发注册。SettingPluginsViewController 在微信里根本不存在。
-//
-//   参考 WBRound：插件收纳的真正入口是 NewSettingViewController（设置根页），
-//   注册时机选 viewWillAppear(animated:) 并在 %orig 之后调用——
-//   1) 设置页一打开就把插件登记到 WCPluginsMgr.sharedInstance.plugins；
-//   2) 之后再由 WCPluginsViewController.initData 从 mgr 拉数据源显示。
-//   这个顺序比 viewDidLoad 更稳：viewDidLoad 在原版里会建表+cellManager，
-//   而我们只是个"追加到全局登记簿", 在原版跑完后做更安全。
-//
-// 另外再保险挂一份 WCPluginsViewController.viewDidLoad（%orig 之前），
-// 万一插件列表页直接被深链打开（不经过设置根页），仍能注册上。
+// 参考实现的思路：WCPluginsMgr 注册之外，永远保底一条不依赖微信私有 API 的
+// 入口 —— 在设置页表格尾部插一个按钮，再给整页挂一个双指轻点手势，
+// 两者都直接 push 我们的设置页。这样即使 WCPluginsMgr 注册失败或被冲掉，
+// 用户也永远进得来。
+static UIViewController *ArcHostViewController(UIView *view) {
+    UIResponder *r = view;
+    while (r) {
+        if ([r isKindOfClass:[UIViewController class]]) { return (UIViewController *)r; }
+        r = r.nextResponder;
+    }
+    return nil;
+}
+
+@interface ArcEntryOpener : NSObject
+- (void)arcOpen:(id)sender;   // 同时兼容 UIButton(发送自身) 与 UITapGestureRecognizer
+@end
+
+@implementation ArcEntryOpener
+- (void)arcOpen:(id)sender {
+    UIView *view = nil;
+    if ([sender isKindOfClass:[UIView class]]) {
+        view = (UIView *)sender;
+    } else if ([sender isKindOfClass:[UIGestureRecognizer class]]) {
+        view = ((UIGestureRecognizer *)sender).view;
+    }
+    UIViewController *host = view ? ArcHostViewController(view) : nil;
+    if (!host || !host.navigationController) { return; }
+    @try {
+        Class cls = NSClassFromString(kArcSettingsClass);
+        if (!cls) { return; }
+        for (UIViewController *vc in host.navigationController.viewControllers) {
+            if ([vc isKindOfClass:cls]) { return; }   // 已在栈里，不重复推
+        }
+        UIViewController *settings = [[cls alloc] init];
+        [host.navigationController pushViewController:settings animated:YES];
+    } @catch (NSException *e) { }
+}
+@end
+
+static void ArcInstallEntryExtras(UIViewController *vc, BOOL allowFooter) {
+    @try {
+        if (![vc isKindOfClass:[UIViewController class]]) { return; }
+        if (!vc.isViewLoaded || !vc.view) { return; }
+
+        UITableView *tv = nil;
+        if ([vc respondsToSelector:@selector(tableView)]) {
+            id t = nil;
+            @try { t = [vc valueForKey:@"tableView"]; } @catch (NSException *e) { t = nil; }
+            if ([t isKindOfClass:[UITableView class]]) { tv = t; }
+        }
+        if (!tv) {
+            for (UIView *sub in vc.view.subviews) {
+                if ([sub isKindOfClass:[UITableView class]]) { tv = (UITableView *)sub; break; }
+            }
+        }
+
+        if (allowFooter && tv && !tv.tableFooterView) {
+            UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
+            [btn setTitle:kArcPluginTitle forState:UIControlStateNormal];
+            [btn setTitleColor:[UIColor colorWithRed:0.07 green:0.79 blue:0.57 alpha:1.0]
+                      forState:UIControlStateNormal];
+            btn.titleLabel.font = [UIFont systemFontOfSize:16.0 weight:UIFontWeightMedium];
+            [btn addTarget:[ArcEntryOpener new] action:@selector(arcOpen:)
+           forControlEvents:UIControlEventTouchUpInside];
+            UIView *wrap = [[UIView alloc] initWithFrame:
+                            CGRectMake(0, 0, UIScreen.mainScreen.bounds.size.width, 54.0)];
+            btn.frame = wrap.bounds;
+            btn.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+            [wrap addSubview:btn];
+            tv.tableFooterView = wrap;
+        }
+
+        BOOL has = NO;
+        for (UIGestureRecognizer *g in vc.view.gestureRecognizers) {
+            if ([g isKindOfClass:[UITapGestureRecognizer class]] &&
+                ((UITapGestureRecognizer *)g).numberOfTouchesRequired == 2) { has = YES; break; }
+        }
+        if (!has) {
+            UITapGestureRecognizer *g = [[UITapGestureRecognizer alloc]
+                                         initWithTarget:[ArcEntryOpener new]
+                                         action:@selector(arcOpen:)];
+            g.numberOfTouchesRequired = 2;
+            [vc.view addGestureRecognizer:g];
+        }
+    } @catch (NSException *e) { }
+}
+
+#pragma mark - 插件入口触发点（页面驱动，全部参考 WBRound 的挂法）
+
+// 注册时机策略（对齐参考实现的加载环境适配）：
+//   1. 绝不在启动早期（ctor / DidFinishLaunching 之前）注册 —— 微信初始化
+//      中途可能重建 WCPluginsMgr 的 _plugins 数组，早期注册会被静默冲掉；
+//      且 TrollFools 注入点加载时机不保证，提前触碰微信单例风险大。
+//   2. 注册由"页面出现"驱动，均在 %orig 之后执行，幂等 + 自动补注册：
+//      设置根页(NewSettingViewController) / 我页(MoreViewController) 的
+//      viewWillAppear，浮窗页(MinimizeViewController) 的 viewDidLoad。
+//   3. 唯一例外：插件列表页(WCPluginsViewController) 在 %orig 之前注册 ——
+//      它的 initData 会立刻读取 mgr.plugins 建数据源，深链打开时必须抢在前头。
 #define ARC_DEFINE_ENTRY_VIEWDIDLOAD(unique) \
     static IMP gOrigEntry_##unique = NULL; \
     static void ArcEntryViewDidLoad_##unique(UIViewController *self, SEL _cmd) { \
-        ArcRegisterPluginEntry(); \
         if (gOrigEntry_##unique) { ((void (*)(id, SEL))gOrigEntry_##unique)(self, _cmd); } \
+        ArcRegisterPluginEntry(); \
+    }
+
+#define ARC_DEFINE_ENTRY_VIEWDIDLOAD_BEFORE(unique) \
+    static IMP gOrigEntryB_##unique = NULL; \
+    static void ArcEntryViewDidLoadBefore_##unique(UIViewController *self, SEL _cmd) { \
+        ArcRegisterPluginEntry(); \
+        if (gOrigEntryB_##unique) { ((void (*)(id, SEL))gOrigEntryB_##unique)(self, _cmd); } \
     }
 
 #define ARC_DEFINE_ENTRY_VIEWWILLAPPEAR(unique) \
@@ -199,8 +306,20 @@ ARC_DEFINE_WILL_DISPLAY(More)
         ArcRegisterPluginEntry(); \
     }
 
-ARC_DEFINE_ENTRY_VIEWWILLAPPEAR(NewSetting)   // 设置根页：参考 WBRound
-ARC_DEFINE_ENTRY_VIEWDIDLOAD(Plugins)          // 插件列表页本身：保底
+#define ARC_DEFINE_ENTRY_VIEWWILLAPPEAR_EXTRAS(unique) \
+    static IMP gOrigEntryWLA_##unique = NULL; \
+    static void ArcEntryViewWillAppear_##unique(UIViewController *self, SEL _cmd, BOOL animated) { \
+        if (gOrigEntryWLA_##unique) { \
+            ((void (*)(id, SEL, BOOL))gOrigEntryWLA_##unique)(self, _cmd, animated); \
+        } \
+        ArcRegisterPluginEntry(); \
+        ArcInstallEntryExtras(self, YES); \
+    }
+
+ARC_DEFINE_ENTRY_VIEWWILLAPPEAR_EXTRAS(NewSetting)  // 设置根页：注册 + 页脚按钮 + 双指轻点
+ARC_DEFINE_ENTRY_VIEWWILLAPPEAR(More)               // 我页：仅注册（不加页脚，避免挤动该页布局）
+ARC_DEFINE_ENTRY_VIEWDIDLOAD(Minimize)              // 参考 WBRound 同款触发点（幂等，无害）
+ARC_DEFINE_ENTRY_VIEWDIDLOAD_BEFORE(Plugins)        // 插件列表页：initData 前注册（深链保底）
 
 #pragma mark - 安装
 
@@ -252,12 +371,17 @@ static void ArcInstallWeChatHooks(void) {
         }
     }
 
-    // 插件收纳入口：NewSettingViewController（设置根页，主入口，参考 WBRound 做法）
-    //   + WCPluginsViewController（插件列表页本身，深链 / 直接打开的保底）
-    // 两个 VC 用各自独立的 IMP 槽位 + 不同 hook 方法，不能共用。
-    struct { NSString *name; SEL sel; IMP imp; IMP *slot; BOOL needWLA; } const pluginEntries[] = {
-        { @"NewSettingViewController",  @selector(viewWillAppear:),  (IMP)ArcEntryViewWillAppear_NewSetting, (IMP *)&gOrigEntryWLA_NewSetting, YES },
-        { @"WCPluginsViewController", @selector(viewDidLoad),       (IMP)ArcEntryViewDidLoad_Plugins,      &gOrigEntry_Plugins,             NO  },
+    // 插件收纳触发点（参考 WBRound 的页面驱动注册）：
+    //   NewSettingViewController.viewWillAppear  — 设置根页，主入口 + 页脚按钮/双指轻点
+    //   MoreViewController.viewWillAppear        — 我页，注册 + 双指轻点
+    //   MinimizeViewController.viewDidLoad       — 参考 WBRound 同款触发点
+    //   WCPluginsViewController.viewDidLoad      — 插件列表页深链保底（%orig 之前）
+    // 每个 VC 用各自独立的 IMP 槽位 + 不同 hook 方法，不能共用。
+    struct { NSString *name; SEL sel; IMP imp; IMP *slot; } const pluginEntries[] = {
+        { @"NewSettingViewController", @selector(viewWillAppear:), (IMP)ArcEntryViewWillAppear_NewSetting, (IMP *)&gOrigEntryWLA_NewSetting },
+        { @"MoreViewController",       @selector(viewWillAppear:), (IMP)ArcEntryViewWillAppear_More,       (IMP *)&gOrigEntryWLA_More },
+        { @"MinimizeViewController",   @selector(viewDidLoad),     (IMP)ArcEntryViewDidLoad_Minimize,      &gOrigEntry_Minimize },
+        { @"WCPluginsViewController",  @selector(viewDidLoad),     (IMP)ArcEntryViewDidLoadBefore_Plugins, &gOrigEntryB_Plugins },
     };
     for (NSUInteger i = 0; i < sizeof(pluginEntries) / sizeof(pluginEntries[0]); i++) {
         NSString *name = pluginEntries[i].name;
@@ -282,18 +406,31 @@ static void ArcInstallAll(void) {
     ArcInstallUIKitHooks();
     ArcInstallWeChatHooks();
 
-    // TrollFools 的注入点可能是微信包里的某个 framework，加载顺序不保证，
-    // 目标类可能还没注册。这里做几次延迟重试把漏掉的补上。
+    // GoLive 之后仍可能有微信类晚注册，补两轮
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{ ArcInstallWeChatHooks(); });
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(6.0 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{ ArcInstallWeChatHooks(); });
-
-    // 插件收纳注册独立于 hook 安装，单独排重试序列（注册失败是最常见的问题）
-    ArcScheduleEntryRegistration();
+                   dispatch_get_main_queue(), ^{ ArcInstallWeChatHooks(); ArcRegisterPluginEntry(); });
 }
 
 #pragma mark - dylib 入口
+
+// 生效开关：hook 安装 + 首次注册统一推迟到这里。
+// 参考成熟实现（WBRound v1.1.13 注释）的经验：注入的 dylib 若在启动期就
+// 开始改视图，会撞上微信首屏布局风暴（主线程跑满 → watchdog 杀进程）；
+// 而 WCPluginsMgr 的登记簿也可能在微信自身初始化中途被重建。
+// 所以 ctor 只做零风险初始化，生效动作全部推迟到启动完成之后。
+static void ArcGoLive(void) {
+    static BOOL live = NO;
+    if (live) { return; }
+    live = YES;
+
+    (void)[ArcCardEngine shared];
+    ArcInstallAll();
+    ArcRegisterPluginEntry();
+    NSLog(@"[ArcShapedWeChat] go live (v%@), hooks=%lu",
+          kArcPluginVersion, (unsigned long)[ArcStatus shared].hookCount);
+}
 
 __attribute__((constructor))
 static void ArcShapedWeChatEntry(void) {
@@ -303,15 +440,30 @@ static void ArcShapedWeChatEntry(void) {
             return;   // 只作用于微信主程序
         }
 
-        (void)[ArcPrefs shared];
-        (void)[ArcCardEngine shared];
-
+        (void)[ArcPrefs shared];   // 只读偏好，安全
         ArcStatus *status = [ArcStatus shared];
         status.dylibLoaded = YES;
+        NSLog(@"[ArcShapedWeChat] dylib ctor loaded (v%@)", kArcPluginVersion);
 
-        ArcInstallAll();
-        // 先同步注册一次（若 WCPluginsMgr 此刻已可用就能立刻成功），
-        // 不成功则由 ArcScheduleEntryRegistration 的延迟序列继续重试。
-        ArcRegisterPluginEntry();
+        // TrollFools 注入点加载时机不保证，ctor 可能早于 UIApplicationMain。
+        // 正常路径：监听启动完成通知，再延 3.5s 生效（给微信首屏留够时间）。
+        [[NSNotificationCenter defaultCenter]
+            addObserverForName:UIApplicationDidFinishLaunchingNotification
+                        object:nil
+                         queue:[NSOperationQueue mainQueue]
+                    usingBlock:^(NSNotification *note) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.5 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{ ArcGoLive(); });
+        }];
+        // 兜底：没收到启动通知（注入点加载过晚/非标准启动流程）时 8s 强制生效
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(8.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ ArcGoLive(); });
+
+        // 启动后的补注册序列：万一设置页一直没打开、注册又被冲掉，仍有机会补上
+        static const NSTimeInterval delays[] = {12.0, 25.0, 45.0, 75.0};
+        for (NSUInteger i = 0; i < sizeof(delays) / sizeof(delays[0]); i++) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delays[i] * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{ ArcRegisterPluginEntry(); });
+        }
     }
 }
