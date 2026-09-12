@@ -26,7 +26,7 @@
 
 /// 插件在微信「设置 → 插件」列表里的外显名称
 #define kArcPluginTitle   @"你啊爸支鼎溜"
-#define kArcPluginVersion @"1.1-1"
+#define kArcPluginVersion @"1.2-1"
 #define kArcSettingsClass @"ArcShapedWeChatSettingsController"
 
 #pragma mark - 私有 API 声明（仅声明，不实现）

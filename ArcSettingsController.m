@@ -14,7 +14,7 @@
 #import "ArcClassConfig.h"
 #import "ArcForceRound.h"
 
-#define kArcVersion @"1.1-1"
+#define kArcVersion @"1.2-1"
 
 typedef NS_ENUM(NSUInteger, ArcRow) {
     // 主开关
@@ -76,7 +76,7 @@ typedef NS_ENUM(NSUInteger, ArcRow) {
 
 - (instancetype)init {
     if ((self = [super initWithNibName:nil bundle:nil])) {
-        self.title = @"Arc-shaped WeChat";
+        self.title = @"你啊爸支鼎溜";
     }
     return self;
 }
