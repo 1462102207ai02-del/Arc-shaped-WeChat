@@ -26,7 +26,7 @@
 
 /// 插件在微信「设置 → 插件」列表里的外显名称
 #define kArcPluginTitle   @"你啊爸支鼎溜"
-#define kArcPluginVersion @"1.3-1"
+#define kArcPluginVersion @"1.4-1"
 #define kArcSettingsClass @"ArcShapedWeChatSettingsController"
 
 #pragma mark - 私有 API 声明（仅声明，不实现）
@@ -183,12 +183,11 @@ ARC_DEFINE_WILL_DISPLAY(NewMainFrame)
 ARC_DEFINE_WILL_DISPLAY(Contacts)
 ARC_DEFINE_WILL_DISPLAY(More)
 
-#pragma mark - 设置页第二入口（页脚按钮 + 双指轻点，参考 WBRound WBInstallFooter）
+#pragma mark - 设置页第二入口（页脚按钮，参考 WBRound WBInstallFooter）
 
-// 参考实现的思路：WCPluginsMgr 注册之外，永远保底一条不依赖微信私有 API 的
-// 入口 —— 在设置页表格尾部插一个按钮，再给整页挂一个双指轻点手势，
-// 两者都直接 push 我们的设置页。这样即使 WCPluginsMgr 注册失败或被冲掉，
-// 用户也永远进得来。
+// WCPluginsMgr 注册之外，保底一条不依赖微信私有 API 的入口：
+// 在设置根页表格尾部插一个按钮，直接 push 我们的设置页。
+// 这样即使 WCPluginsMgr 注册失败或被微信冲掉，用户也永远进得来。
 static UIViewController *ArcHostViewController(UIView *view) {
     UIResponder *r = view;
     while (r) {
@@ -199,18 +198,12 @@ static UIViewController *ArcHostViewController(UIView *view) {
 }
 
 @interface ArcEntryOpener : NSObject
-- (void)arcOpen:(id)sender;   // 同时兼容 UIButton(发送自身) 与 UITapGestureRecognizer
+- (void)arcOpen:(UIButton *)sender;
 @end
 
 @implementation ArcEntryOpener
-- (void)arcOpen:(id)sender {
-    UIView *view = nil;
-    if ([sender isKindOfClass:[UIView class]]) {
-        view = (UIView *)sender;
-    } else if ([sender isKindOfClass:[UIGestureRecognizer class]]) {
-        view = ((UIGestureRecognizer *)sender).view;
-    }
-    UIViewController *host = view ? ArcHostViewController(view) : nil;
+- (void)arcOpen:(UIButton *)sender {
+    UIViewController *host = ArcHostViewController(sender);
     if (!host || !host.navigationController) { return; }
     @try {
         Class cls = NSClassFromString(kArcSettingsClass);
@@ -224,7 +217,7 @@ static UIViewController *ArcHostViewController(UIView *view) {
 }
 @end
 
-static void ArcInstallEntryExtras(UIViewController *vc, BOOL allowFooter) {
+static void ArcInstallEntryExtras(UIViewController *vc) {
     @try {
         if (![vc isKindOfClass:[UIViewController class]]) { return; }
         if (!vc.isViewLoaded || !vc.view) { return; }
@@ -240,35 +233,21 @@ static void ArcInstallEntryExtras(UIViewController *vc, BOOL allowFooter) {
                 if ([sub isKindOfClass:[UITableView class]]) { tv = (UITableView *)sub; break; }
             }
         }
+        if (!tv || tv.tableFooterView) { return; }
 
-        if (allowFooter && tv && !tv.tableFooterView) {
-            UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
-            [btn setTitle:kArcPluginTitle forState:UIControlStateNormal];
-            [btn setTitleColor:[UIColor colorWithRed:0.07 green:0.79 blue:0.57 alpha:1.0]
-                      forState:UIControlStateNormal];
-            btn.titleLabel.font = [UIFont systemFontOfSize:16.0 weight:UIFontWeightMedium];
-            [btn addTarget:[ArcEntryOpener new] action:@selector(arcOpen:)
-           forControlEvents:UIControlEventTouchUpInside];
-            UIView *wrap = [[UIView alloc] initWithFrame:
-                            CGRectMake(0, 0, UIScreen.mainScreen.bounds.size.width, 54.0)];
-            btn.frame = wrap.bounds;
-            btn.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-            [wrap addSubview:btn];
-            tv.tableFooterView = wrap;
-        }
-
-        BOOL has = NO;
-        for (UIGestureRecognizer *g in vc.view.gestureRecognizers) {
-            if ([g isKindOfClass:[UITapGestureRecognizer class]] &&
-                ((UITapGestureRecognizer *)g).numberOfTouchesRequired == 2) { has = YES; break; }
-        }
-        if (!has) {
-            UITapGestureRecognizer *g = [[UITapGestureRecognizer alloc]
-                                         initWithTarget:[ArcEntryOpener new]
-                                         action:@selector(arcOpen:)];
-            g.numberOfTouchesRequired = 2;
-            [vc.view addGestureRecognizer:g];
-        }
+        UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
+        [btn setTitle:kArcPluginTitle forState:UIControlStateNormal];
+        [btn setTitleColor:[UIColor colorWithRed:0.07 green:0.79 blue:0.57 alpha:1.0]
+                  forState:UIControlStateNormal];
+        btn.titleLabel.font = [UIFont systemFontOfSize:16.0 weight:UIFontWeightMedium];
+        [btn addTarget:[ArcEntryOpener new] action:@selector(arcOpen:)
+       forControlEvents:UIControlEventTouchUpInside];
+        UIView *wrap = [[UIView alloc] initWithFrame:
+                        CGRectMake(0, 0, UIScreen.mainScreen.bounds.size.width, 54.0)];
+        btn.frame = wrap.bounds;
+        btn.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        [wrap addSubview:btn];
+        tv.tableFooterView = wrap;
     } @catch (NSException *e) { }
 }
 
@@ -313,10 +292,10 @@ static void ArcInstallEntryExtras(UIViewController *vc, BOOL allowFooter) {
             ((void (*)(id, SEL, BOOL))gOrigEntryWLA_##unique)(self, _cmd, animated); \
         } \
         ArcRegisterPluginEntry(); \
-        ArcInstallEntryExtras(self, YES); \
+        ArcInstallEntryExtras(self); \
     }
 
-ARC_DEFINE_ENTRY_VIEWWILLAPPEAR_EXTRAS(NewSetting)  // 设置根页：注册 + 页脚按钮 + 双指轻点
+ARC_DEFINE_ENTRY_VIEWWILLAPPEAR_EXTRAS(NewSetting)  // 设置根页：注册 + 页脚按钮入口
 ARC_DEFINE_ENTRY_VIEWWILLAPPEAR(More)               // 我页：仅注册（不加页脚，避免挤动该页布局）
 ARC_DEFINE_ENTRY_VIEWDIDLOAD(Minimize)              // 参考 WBRound 同款触发点（幂等，无害）
 ARC_DEFINE_ENTRY_VIEWDIDLOAD_BEFORE(Plugins)        // 插件列表页：initData 前注册（深链保底）

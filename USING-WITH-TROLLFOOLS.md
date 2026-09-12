@@ -8,8 +8,9 @@
 ArcShapedWeChat.dylib
 ```
 
-这是一个**裸 dylib**（arm64，iOS 14.0+），不链接 CydiaSubstrate / libhooker / ElleKit，
-只依赖 UIKit / Foundation / QuartzCore / CoreGraphics，可以直接交给 TrollFools。
+这是一个**裸 dylib**（arm64，最低部署版本 iOS 14.0，兼容 iOS 14.0 – 26.x、微信 8.0.72+），
+不链接 CydiaSubstrate / libhooker / ElleKit，只依赖 UIKit / Foundation / QuartzCore /
+CoreGraphics，可以直接交给 TrollFools。
 
 ## 为什么是裸 dylib 而不是 deb
 
@@ -33,7 +34,11 @@ TrollFools 官方 README 对目标应用的分类是：
 
 ## 打开设置
 
-微信 → **我 → 设置 → 插件**，列表里会出现 **Arc-shaped WeChat**。
+入口有三条（互为备份）：
+
+1. 微信 → **我 → 设置 → 插件**，列表里的 **你啊爸支鼎溜**；
+2. **我 → 设置** 页面拉到底部的 **你啊爸支鼎溜** 按钮；
+3. 前两条都看不到 = dylib 没有被加载（见下方排查表）。
 
 点进去可以调：
 
@@ -47,16 +52,25 @@ TrollFools 官方 README 对目标应用的分类是：
 
 ## 它是怎么被加载的
 
-TrollFools 做的事（对应 `InjectorV3+Inject.swift`）：
+以下规则来自 TrollFools 源码（`InjectorV3+Inject.swift` / `InjectorV3+Bundle.swift`）：
 
-1. 把 dylib 拷进 `WeChat.app/Frameworks/`
-2. 往目标 Mach-O 插入 `LC_RPATH = @executable_path/Frameworks`
-3. 插入 `LC_LOAD_DYLIB = @rpath/ArcShapedWeChat.dylib`
-4. 对 dylib 做 CoreTrust bypass（用宿主 App 的 Team ID 重签）
+1. dylib 被拷进 `WeChat.app/Frameworks/ArcShapedWeChat.dylib`；
+2. TrollFools 扫描微信包内 **主程序静态链接的内嵌 framework**，按策略排序
+   （默认 lexicographic，按文件名排序）后选出第一个**未加密**的 Mach-O 作为注入点
+   （微信主二进制加密，永远轮不到它，只会排在候选末位）；
+3. 往选中的 framework 插入 `LC_RPATH = @executable_path/Frameworks` 和
+   `LC_LOAD_DYLIB = @rpath/ArcShapedWeChat.dylib`（**默认弱引用**，加载失败不会
+   导致微信崩溃，但也意味着不会报错——插件没生效时通常完全无感知）；
+4. 对 dylib 和注入点做 CoreTrust bypass（用宿主 App 的 Team ID 重签）。
 
-**注意**：因为微信主二进制是加密的，TrollFools 实际会挑微信包里某个**未加密**的 Mach-O
-（通常是微信自己的某个 framework）作为注入目标。所以 dylib 的构造时机不完全可控，
-插件内部做了 2s / 6s 两次延迟重试来兜底安装 hook。
+**推论**：本插件被加载的时机 = 微信加载那个 framework 的时机，不完全可控。
+因此插件内部的策略是——
+
+- 构造函数只做零风险初始化；
+- hook 安装推迟到「App 启动完成 + 3.5s」（兜底 8s），另加 2s / 6s 补挂；
+- 插件收纳注册由页面出现驱动（设置根页 / 我页 / 插件列表页），每次触发都会
+  复查登记是否还在，被微信重建冲掉会自动补注册；
+- 启动后 12s / 25s / 45s / 75s 另有一轮注册兜底。
 
 ## 配置文件在哪里
 
@@ -73,7 +87,8 @@ TrollFools 做的事（对应 `InjectorV3+Inject.swift`）：
 | 现象 | 处理 |
 | --- | --- |
 | 注入后微信闪退 | 在 TrollFools 里移除插件；多半是某个页面被容器圆角裁坏了，重开后先关掉「容器圆角」 |
-| 插件列表里没有入口 | 强制杀掉微信重开；仍没有则确认 dylib 与 TrollFools 版本匹配（iOS 14–17） |
+| 设置 → 插件里没有入口 | 看「我 → 设置」页底部有没有 **你啊爸支鼎溜** 按钮：有 → 只是 WCPluginsMgr 注册没成功，从按钮进即可；没有 → dylib 未被加载，见下一行 |
+| 两个入口都没有 | dylib 未被加载。依次尝试：① 完全杀掉微信重开；② TrollFools 移除后重新注入；③ 在 TrollFools 注入设置里把策略从 Lexicographic 换成 Fast / Pre-order 再注入（换一个被带起的 framework）；④ 重启手机 |
 | 某些页面排版错乱 | 设置页把「作用范围」保持在白名单；或关掉对应类别的强制圆角 |
 | 改了设置没变化 | 点右上角「刷新」，或杀掉微信重开 |
 | 想彻底移除 | TrollFools → 微信 → 移除 → 删除插件 |
