@@ -169,9 +169,20 @@ ARC_DEFINE_WILL_DISPLAY(More)
 
 #pragma mark - 插件入口页
 
-// 关键：注册必须在 %orig **之前**完成。
-// 微信插件列表页是在自己的 viewDidLoad 里构建数据源的，
-// 如果等 %orig 跑完再注册，这一次打开列表里就不会出现本插件。
+// 注册策略（关键修正）：
+//   原版错把 MinimizeViewController 当成"插件入口"。那是多任务浮窗控制器
+//   (MinimizeAbsorbFloatingView/MinimizeGestureCircleView 等), 跟插件收纳毫无关系，
+//   hook 它永远不会触发注册。SettingPluginsViewController 在微信里根本不存在。
+//
+//   参考 WBRound：插件收纳的真正入口是 NewSettingViewController（设置根页），
+//   注册时机选 viewWillAppear(animated:) 并在 %orig 之后调用——
+//   1) 设置页一打开就把插件登记到 WCPluginsMgr.sharedInstance.plugins；
+//   2) 之后再由 WCPluginsViewController.initData 从 mgr 拉数据源显示。
+//   这个顺序比 viewDidLoad 更稳：viewDidLoad 在原版里会建表+cellManager，
+//   而我们只是个"追加到全局登记簿", 在原版跑完后做更安全。
+//
+// 另外再保险挂一份 WCPluginsViewController.viewDidLoad（%orig 之前），
+// 万一插件列表页直接被深链打开（不经过设置根页），仍能注册上。
 #define ARC_DEFINE_ENTRY_VIEWDIDLOAD(unique) \
     static IMP gOrigEntry_##unique = NULL; \
     static void ArcEntryViewDidLoad_##unique(UIViewController *self, SEL _cmd) { \
@@ -179,9 +190,17 @@ ARC_DEFINE_WILL_DISPLAY(More)
         if (gOrigEntry_##unique) { ((void (*)(id, SEL))gOrigEntry_##unique)(self, _cmd); } \
     }
 
-ARC_DEFINE_ENTRY_VIEWDIDLOAD(Minimize)
-ARC_DEFINE_ENTRY_VIEWDIDLOAD(Plugins)
-ARC_DEFINE_ENTRY_VIEWDIDLOAD(SettingPlugins)
+#define ARC_DEFINE_ENTRY_VIEWWILLAPPEAR(unique) \
+    static IMP gOrigEntryWLA_##unique = NULL; \
+    static void ArcEntryViewWillAppear_##unique(UIViewController *self, SEL _cmd, BOOL animated) { \
+        if (gOrigEntryWLA_##unique) { \
+            ((void (*)(id, SEL, BOOL))gOrigEntryWLA_##unique)(self, _cmd, animated); \
+        } \
+        ArcRegisterPluginEntry(); \
+    }
+
+ARC_DEFINE_ENTRY_VIEWWILLAPPEAR(NewSetting)   // 设置根页：参考 WBRound
+ARC_DEFINE_ENTRY_VIEWDIDLOAD(Plugins)          // 插件列表页本身：保底
 
 #pragma mark - 安装
 
@@ -233,22 +252,21 @@ static void ArcInstallWeChatHooks(void) {
         }
     }
 
-    // 插件收纳入口：MinimizeViewController（官方声明给的入口）
-    // + WCPluginsViewController / SettingPluginsViewController（插件列表页自身，保底）
-    // 三者各用独立的原始 IMP 槽位，不能共用。
-    struct { NSString *name; IMP imp; IMP *slot; } const pluginEntries[] = {
-        { @"MinimizeViewController",       (IMP)ArcEntryViewDidLoad_Minimize,       &gOrigEntry_Minimize },
-        { @"WCPluginsViewController",      (IMP)ArcEntryViewDidLoad_Plugins,        &gOrigEntry_Plugins },
-        { @"SettingPluginsViewController", (IMP)ArcEntryViewDidLoad_SettingPlugins, &gOrigEntry_SettingPlugins },
+    // 插件收纳入口：NewSettingViewController（设置根页，主入口，参考 WBRound 做法）
+    //   + WCPluginsViewController（插件列表页本身，深链 / 直接打开的保底）
+    // 两个 VC 用各自独立的 IMP 槽位 + 不同 hook 方法，不能共用。
+    struct { NSString *name; SEL sel; IMP imp; IMP *slot; BOOL needWLA; } const pluginEntries[] = {
+        { @"NewSettingViewController",  @selector(viewWillAppear:),  (IMP)ArcEntryViewWillAppear_NewSetting, (IMP *)&gOrigEntryWLA_NewSetting, YES },
+        { @"WCPluginsViewController", @selector(viewDidLoad),       (IMP)ArcEntryViewDidLoad_Plugins,      &gOrigEntry_Plugins,             NO  },
     };
     for (NSUInteger i = 0; i < sizeof(pluginEntries) / sizeof(pluginEntries[0]); i++) {
         NSString *name = pluginEntries[i].name;
         if ([gHookedClasses containsObject:name]) { continue; }
         Class cls = NSClassFromString(name);
         if (!cls) { continue; }
-        if (![cls instancesRespondToSelector:@selector(viewDidLoad)]) { continue; }
+        if (![cls instancesRespondToSelector:pluginEntries[i].sel]) { continue; }
         [gHookedClasses addObject:name];
-        if (ArcHookInstance(cls, @selector(viewDidLoad), pluginEntries[i].imp, pluginEntries[i].slot)) {
+        if (ArcHookInstance(cls, pluginEntries[i].sel, pluginEntries[i].imp, pluginEntries[i].slot)) {
             [[ArcStatus shared] noteHookedClass:name];
         }
     }
