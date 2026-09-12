@@ -10,6 +10,7 @@
 //       不引入额外 dylib 依赖可以避免 dyld 加载顺序问题。
 //
 
+#import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 
 NS_ASSUME_NONNULL_BEGIN

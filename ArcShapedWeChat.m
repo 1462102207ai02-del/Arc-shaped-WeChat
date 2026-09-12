@@ -33,6 +33,14 @@
 - (void)_configureCellForDisplay:(UITableViewCell *)cell forIndexPath:(NSIndexPath *)indexPath;
 @end
 
+/// WCPluginsMgr 的注册接口。ARC 下不允许向 id 发送未知 selector，
+/// 必须先用协议把方法签名告诉编译器；运行时仍走 NSClassFromString 反射。
+@protocol ArcWCPluginsMgrProtocol <NSObject>
+- (void)registerControllerWithTitle:(NSString *)title
+                            version:(NSString *)version
+                         controller:(NSString *)controller;
+@end
+
 #pragma mark - 插件收纳注册
 
 static BOOL gEntryRegistered = NO;
@@ -47,9 +55,10 @@ static void ArcRegisterPluginEntry(void) {
         if (!mgr) { return; }
         SEL reg = @selector(registerControllerWithTitle:version:controller:);
         if (![mgr respondsToSelector:reg]) { return; }
-        [mgr registerControllerWithTitle:kArcPluginTitle
-                                 version:kArcPluginVersion
-                              controller:kArcSettingsClass];
+        id<ArcWCPluginsMgrProtocol> registrar = (id<ArcWCPluginsMgrProtocol>)mgr;
+        [registrar registerControllerWithTitle:kArcPluginTitle
+                                       version:kArcPluginVersion
+                                    controller:kArcSettingsClass];
         gEntryRegistered = YES;
     } @catch (NSException *exception) {
         // 注册失败绝不能让微信崩，静默跳过
