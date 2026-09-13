@@ -7,6 +7,7 @@
 
 #import "ArcBannerRound.h"
 #import "ArcPrefs.h"
+#import "ArcStatus.h"
 #import "ArcHook.h"
 #import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
