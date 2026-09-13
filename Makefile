@@ -21,6 +21,7 @@ SOURCES := ArcShapedWeChat.m \
            ArcClassConfig.m \
            ArcCardEngine.m \
            ArcForceRound.m \
+           ArcBannerRound.m \
            ArcSettingsController.m \
            ArcClassSettings.m
 

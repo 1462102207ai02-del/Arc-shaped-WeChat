@@ -21,12 +21,13 @@
 #import "ArcStatus.h"
 #import "ArcCardEngine.h"
 #import "ArcForceRound.h"
+#import "ArcBannerRound.h"
 #import "ArcTargetClasses.h"
 #import "ArcSettingsController.h"
 
 /// 插件在微信「设置 → 插件」列表里的外显名称
 #define kArcPluginTitle   @"你啊爸支鼎溜"
-#define kArcPluginVersion @"1.4-1"
+#define kArcPluginVersion @"1.9-4"
 #define kArcSettingsClass @"ArcShapedWeChatSettingsController"
 
 #pragma mark - 私有 API 声明（仅声明，不实现）
@@ -376,6 +377,9 @@ static void ArcInstallWeChatHooks(void) {
 
     // 强制圆角（视图类清单）
     [ArcForceRound install];
+
+    // 横幅（折叠置顶聊天面板 + 第三方登录卡片）
+    [ArcBannerRound install];
 }
 
 static void ArcInstallAll(void) {

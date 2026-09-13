@@ -14,7 +14,7 @@
 #import "ArcClassConfig.h"
 #import "ArcForceRound.h"
 
-#define kArcVersion @"1.4-1"
+#define kArcVersion @"1.9-4"
 
 typedef NS_ENUM(NSUInteger, ArcRow) {
     // 主开关
@@ -46,6 +46,11 @@ typedef NS_ENUM(NSUInteger, ArcRow) {
     ArcRowRoundTableView,
     ArcRowTableViewRadius,
     ArcRowContinuousCorner,
+
+    // 横幅（折叠置顶聊天面板 / 第三方登录卡片）
+    ArcRowBannerMaster,
+    ArcRowBannerRadius,
+    ArcRowBannerInset,
 
     // 按类配置
     ArcRowPerClass,
@@ -98,6 +103,7 @@ typedef NS_ENUM(NSUInteger, ArcRow) {
            @(ArcRowRoundSettingCell), @(ArcRowSettingCellRadius),
            @(ArcRowRoundTableView), @(ArcRowTableViewRadius),
            @(ArcRowContinuousCorner) ],
+        @[ @(ArcRowBannerMaster), @(ArcRowBannerRadius), @(ArcRowBannerInset) ],
         @[ @(ArcRowPerClass) ],
         @[ @(ArcRowScope), @(ArcRowSessionRowCard), @(ArcRowPageBg) ],
         @[ @(ArcRowRefresh), @(ArcRowReset), @(ArcRowVersion) ],
@@ -107,6 +113,7 @@ typedef NS_ENUM(NSUInteger, ArcRow) {
         @"总开关关闭后，所有页面恢复微信原样。",
         @"卡片化的三个核心参数：圆角半径决定弧线，左右缩进决定卡片离屏幕边的距离，卡片间距决定卡与卡之间的留白。",
         @"对应逆向得到的视图类清单：头像 MMHeadImageView、图片 WCImageView/MMWebImageView、九宫格 MMImageGridView、按钮 MMUIButton/MMTransparentButton、容器 MMUIView/ColorGradientView、单元格 MMTableViewCell/SettingCell、表格 MMTableView。容器类圆角最激进，出问题时优先关它。",
+        @"作用于横幅/卡片类视图：折叠置顶聊天的展开面板（MainFrameAggregationViewController）和第三方登录卡片（MultiDeviceCardLoginContentView）。圆角半径控制弧线，水平缩进控制横幅离屏幕边的距离。",
         @"按逆向清单逐个类单独设置：启用模式、背景色（系统取色器，支持透明度）、圆角半径、缩进上下左右。\n类级配置优先级高于以上所有全局设置。",
         @"白名单模式只处理已验证过的页面；全局模式会把所有列表都卡片化，可能出现个别页面排版异常。",
         @"",
@@ -160,6 +167,7 @@ typedef NS_ENUM(NSUInteger, ArcRow) {
         case ArcRowRoundSettingCell:  prefs.roundSettingCell = sender.on; break;
         case ArcRowRoundTableView:    prefs.roundTableView = sender.on; break;
         case ArcRowContinuousCorner:  prefs.continuousCorner = sender.on; break;
+        case ArcRowBannerMaster:     prefs.bannerEnabled = sender.on; break;
         default: break;
     }
     [prefs synchronize];
@@ -180,6 +188,8 @@ typedef NS_ENUM(NSUInteger, ArcRow) {
         case ArcRowContainerRadius:   prefs.containerRadius = v; break;
         case ArcRowSettingCellRadius: prefs.settingCellRadius = v; break;
         case ArcRowTableViewRadius:   prefs.tableViewRadius = v; break;
+        case ArcRowBannerRadius:      prefs.bannerRadius = v; break;
+        case ArcRowBannerInset:       prefs.bannerInsetH = v; break;
         default: break;
     }
     [self updateValueLabelForSlider:sender];
@@ -291,6 +301,10 @@ typedef NS_ENUM(NSUInteger, ArcRow) {
             cell.textLabel.text = @"连续圆角曲线";
             cell.detailTextLabel.text = @"kCACornerCurveContinuous，苹果原生观感";
             sw.on = prefs.continuousCorner; break;
+        case ArcRowBannerMaster:
+            cell.textLabel.text = @"启用横幅圆角";
+            cell.detailTextLabel.text = @"折叠置顶聊天面板 + 第三方登录卡片";
+            sw.on = prefs.bannerEnabled; break;
         default: break;
     }
     return cell;
@@ -364,6 +378,8 @@ typedef NS_ENUM(NSUInteger, ArcRow) {
         case ArcRowContainerRadius:   title.text = @"容器半径"; value = prefs.containerRadius; break;
         case ArcRowSettingCellRadius: title.text = @"单元格";   value = prefs.settingCellRadius; break;
         case ArcRowTableViewRadius:   title.text = @"表格半径"; value = prefs.tableViewRadius; break;
+        case ArcRowBannerRadius:      title.text = @"横幅圆角"; value = prefs.bannerRadius; break;
+        case ArcRowBannerInset:       title.text = @"横幅左右缩进"; value = prefs.bannerInsetH; break;
         case ArcRowBorderWidth:
             title.text = @"描边宽度"; value = prefs.borderWidth; slider.maximumValue = 3; break;
         default: break;
@@ -479,6 +495,7 @@ typedef NS_ENUM(NSUInteger, ArcRow) {
         case ArcRowRoundSettingCell:
         case ArcRowRoundTableView:
         case ArcRowContinuousCorner:
+        case ArcRowBannerMaster:
             return [self switchCellForRow:row];
 
         case ArcRowRadius:
@@ -492,6 +509,8 @@ typedef NS_ENUM(NSUInteger, ArcRow) {
         case ArcRowContainerRadius:
         case ArcRowSettingCellRadius:
         case ArcRowTableViewRadius:
+        case ArcRowBannerRadius:
+        case ArcRowBannerInset:
             return [self sliderCellForRow:row];
 
         case ArcRowPerClass: return [self perClassCell];

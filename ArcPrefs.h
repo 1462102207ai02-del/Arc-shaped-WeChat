@@ -70,6 +70,12 @@ typedef NS_ENUM(NSUInteger, ArcCardStyle) {
 @property (nonatomic, assign) CGFloat tableViewRadius;
 @property (nonatomic, assign) BOOL continuousCorner;      // kCACornerCurveContinuous（苹果风格连续圆角）
 
+#pragma mark - 横幅（折叠置顶聊天面板 / 第三方登录卡片）
+
+@property (nonatomic, assign) BOOL bannerEnabled;          // 横幅总开关
+@property (nonatomic, assign) CGFloat bannerRadius;        // 横幅圆角
+@property (nonatomic, assign) CGFloat bannerInsetH;        // 横幅水平缩进
+
 #pragma mark - 存取
 
 - (void)reload;

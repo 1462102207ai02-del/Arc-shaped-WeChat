@@ -41,6 +41,10 @@ static NSString *const kRoundTableView    = @"RoundTableView";
 static NSString *const kTableViewRadius   = @"TableViewRadius";
 static NSString *const kContinuousCorner  = @"ContinuousCorner";
 
+static NSString *const kBannerEnabled     = @"BannerEnabled";
+static NSString *const kBannerRadius      = @"BannerRadius";
+static NSString *const kBannerInsetH      = @"BannerInsetH";
+
 /// TrollFools / 沙盒环境：写 App 自己的容器（一定可写）
 /// 越狱环境：优先写 /var/mobile 下的共享位置，失败再回退容器
 static NSString *ArcPrefsFilePath(void) {
@@ -141,6 +145,11 @@ static NSString *ArcPrefsFilePath(void) {
         kRoundTableView:   @NO,
         kTableViewRadius:  @12.0,
         kContinuousCorner: @YES,
+
+        // 横幅
+        kBannerEnabled:    @YES,
+        kBannerRadius:     @14.0,
+        kBannerInsetH:     @10.0,
     };
 }
 
@@ -271,6 +280,17 @@ static NSString *ArcPrefsFilePath(void) {
 
 - (BOOL)continuousCorner            { return [[self objectForKey:kContinuousCorner] boolValue]; }
 - (void)setContinuousCorner:(BOOL)v { [self setObject:@(v) forKey:kContinuousCorner]; }
+
+#pragma mark - 横幅
+
+- (BOOL)bannerEnabled            { return [[self objectForKey:kBannerEnabled] boolValue]; }
+- (void)setBannerEnabled:(BOOL)v { [self setObject:@(v) forKey:kBannerEnabled]; }
+
+- (CGFloat)bannerRadius            { return [[self objectForKey:kBannerRadius] doubleValue]; }
+- (void)setBannerRadius:(CGFloat)v { [self setObject:@(v) forKey:kBannerRadius]; }
+
+- (CGFloat)bannerInsetH            { return [[self objectForKey:kBannerInsetH] doubleValue]; }
+- (void)setBannerInsetH:(CGFloat)v { [self setObject:@(v) forKey:kBannerInsetH]; }
 
 #pragma mark - 颜色
 
